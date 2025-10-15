@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ViveSano - Pedir</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="estilos.css">
+</head>
+<body>
+  <!-- navbar ... (omitir por brevedad) -->
+
+  <main class="container py-5">
+    <h2>Realiza tu Pedido</h2>
+
+    <!-- Sección de añadir items rápido (puede venir desde query string o desde menu.html) -->
+    <div class="card p-3 mb-3">
+      <div id="selectedItems">No hay items seleccionados.</div>
+      <div class="mt-3 d-flex justify-content-between align-items-center">
+        <strong>Total: Bs <span id="total">0.00</span></strong>
+        <!-- Este botón va a llamar a tu servidor para crear sesión de Stripe -->
+        <button id="payBtn" class="btn btn-success">Pagar con tarjeta</button>
+      </div>
+      <div class="mt-3">
+        <button id="generateQr" class="btn btn-outline-secondary">Generar QR de pedido</button>
+        <div id="qrContainer" class="mt-2"></div>
+      </div>
+    </div>
+
+    <form id="orderForm" class="card p-4">
+      <div class="mb-3">
+        <label for="clienteNombre" class="form-label">Nombre</label>
+        <input type="text" id="clienteNombre" class="form-control" required>
+      </div>
+      <div class="mb-3">
+        <label for="clienteTelefono" class="form-label">Teléfono</label>
+        <input type="tel" id="clienteTelefono" class="form-control" required placeholder="+59170000000">
+      </div>
+      <div class="mb-3">
+        <label for="clienteDireccion" class="form-label">Dirección</label>
+        <input type="text" id="clienteDireccion" class="form-control" required>
+      </div>
+
+      <div class="d-flex justify-content-between">
+        <button type="button" id="addSample" class="btn btn-outline-primary">Añadir Plato Ejemplo</button>
+        <button type="submit" class="btn btn-primary">Confirmar pedido (local)</button>
+      </div>
+
+      <div id="orderMsg" class="mt-3"></div>
+    </form>
+  </main>
+
+  <!-- QR library (si no quieres descargar, usar CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+  <script src="scripts.js"></script>
+  <script>
+    // Logica rápida específica para esta página
+    let cart = [];
+    function renderCart() {
+      const el = document.getElementById('selectedItems');
+      const totalEl = document.getElementById('total');
+      if (cart.length === 0) el.innerHTML = '<p class="text-muted">No hay productos</p>';
+      else {
+        el.innerHTML = cart.map(i => `<div>${i.name} — Bs ${i.price} x ${i.qty}</div>`).join('');
+      }
+      const total = cart.reduce((s,i)=> s + i.price*i.qty, 0);
+      totalEl.textContent = total.toFixed(2);
+    }
+
+    document.getElementById('addSample').addEventListener('click', ()=> {
+      const found = cart.find(x=>x.id===1);
+      if (found) found.qty++;
+      else cart.push({id:1, name:'Avena con Frutas', price:12, qty:1});
+      renderCart();
+    });
+
+    // Generar QR con info del pedido (puedes personalizar el texto/URL)
+    document.getElementById('generateQr').addEventListener('click', async ()=>{
+      const total = cart.reduce((s,i)=> s + i.price*i.qty, 0);
+      const payload = {
+        items: cart,
+        total,
+        time: Date.now()
+      };
+      const text = JSON.stringify(payload);
+      const container = document.getElementById('qrContainer');
+      container.innerHTML = '';
+      QRCode.toDataURL(text).then(url => {
+        const img = document.createElement('img');
+        img.src = url;
+        img.alt = 'QR pedido';
+        img.style.maxWidth = '200px';
+        container.appendChild(img);
+      });
+    });
+
+    // Submit local (guarda pedido en db.json vía server)
+    document.getElementById('orderForm').addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      if (cart.length === 0) { document.getElementById('orderMsg').textContent = 'Añade al menos un producto.'; return; }
+      const body = {
+        cliente: {
+          nombre: document.getElementById('clienteNombre').value,
+          telefono: document.getElementById('clienteTelefono').value,
+          direccion: document.getElementById('clienteDireccion').value
+        },
+        items: cart,
+        total: cart.reduce((s,i)=> s + i.price*i.qty, 0)
+      };
+      // Enviar a tu servidor
+      try {
+        const resp = await fetch('/api/pedidos', {
+          method: 'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(body)
+        });
+        const data = await resp.json();
+        document.getElementById('orderMsg').innerHTML = '<div class="alert alert-success">Pedido guardado. ID: '+data.id+'</div>';
+        // Aquí el servidor puede enviar SMS (Twilio) y notificarte al celular
+        cart = [];
+        renderCart();
+      } catch(err) {
+        document.getElementById('orderMsg').innerHTML = '<div class="alert alert-danger">Error al enviar pedido</div>';
+      }
+    });
+
+    // Pagar con Stripe (crea sesión en server)
+    document.getElementById('payBtn').addEventListener('click', async ()=>{
+      const total = cart.reduce((s,i)=> s + i.price*i.qty, 0);
+      if (total <= 0) { alert('Añade productos antes de pagar'); return; }
+      // Crear sesión en el servidor
+      const resp = await fetch('/create-checkout-session', {
+        method: 'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({items: cart})
+      });
+      const data = await resp.json();
+      if (data.sessionId) {
+        // redirigir a stripe checkout (client-side)
+        const stripe = Stripe('pk_test_REPLACE_WITH_YOUR_PUBLISHABLE_KEY'); // reemplaza
+        stripe.redirectToCheckout({ sessionId: data.sessionId });
+      } else alert('Error creando sesión de pago');
+    });
+
+    // inicial
+    renderCart();
+  </script>
+
+  <!-- Stripe client library -->
+  <script src="https://js.stripe.com/v3/"></script>
+</body>
+</html>
